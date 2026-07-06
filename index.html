@@ -62,6 +62,35 @@
   .pp .d{color:var(--dim);font-size:10px;margin-top:2px}
 
   @media(max-width:520px){.panel{width:calc(100% - 24px)}}
+
+  /* --- street search --- */
+  .searchBtn{
+    position:fixed;right:12px;bottom:170px;z-index:10;width:34px;height:34px;
+    border-radius:8px;border:1px solid var(--line);background:var(--panel);
+    backdrop-filter:blur(10px);color:var(--text);cursor:pointer;font-size:15px;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .searchBtn:hover{background:rgba(255,255,255,.08)}
+  .searchBox{
+    position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:20;
+    width:min(420px, calc(100% - 24px));display:none;
+  }
+  .searchBox.open{display:block}
+  .searchBox input{
+    width:100%;padding:11px 14px;border-radius:10px;border:1px solid var(--line);
+    background:var(--panel);backdrop-filter:blur(10px);color:var(--text);
+    font:inherit;font-size:14px;outline:none;
+  }
+  .searchBox input:focus{border-color:#4a5568}
+  .results{
+    margin-top:6px;background:var(--panel);backdrop-filter:blur(10px);
+    border:1px solid var(--line);border-radius:10px;overflow:hidden;
+  }
+  .results:empty{display:none}
+  .result{padding:10px 14px;font-size:12px;cursor:pointer;border-bottom:1px solid var(--line)}
+  .result:last-child{border-bottom:none}
+  .result:hover{background:rgba(255,255,255,.06)}
+  .result .sub{color:var(--dim);font-size:10px;margin-top:2px}
 </style>
 </head>
 <body>
@@ -76,6 +105,12 @@
   <div class="types" id="types"></div>
   <button class="heatToggle" id="heatBtn">🔥 zóny zpoždění: vyp</button>
   <div class="status" id="status">připojuji…</div>
+</div>
+
+<button class="searchBtn" id="searchBtn" title="Hledat ulici">⌕</button>
+<div class="searchBox" id="searchBox">
+  <input id="searchInput" type="text" placeholder="Hledat ulici… (Esc zavře)" autocomplete="off">
+  <div class="results" id="searchResults"></div>
 </div>
 
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
@@ -336,6 +371,57 @@ document.getElementById("heatBtn").onclick = function(){
   if (map.getLayer("delay-heat"))
     map.setLayoutProperty("delay-heat","visibility", heatOn ? "visible" : "none");
 };
+
+// ---- street search (Photon / OpenStreetMap, free, no key) ----
+const searchBox = document.getElementById("searchBox");
+const searchInput = document.getElementById("searchInput");
+const searchResults = document.getElementById("searchResults");
+let searchMarker = null;
+let searchTimer = null;
+
+document.getElementById("searchBtn").onclick = ()=>{
+  searchBox.classList.toggle("open");
+  if (searchBox.classList.contains("open")) searchInput.focus();
+};
+searchInput.addEventListener("keydown", e=>{
+  if (e.key === "Escape"){ searchBox.classList.remove("open"); searchResults.innerHTML=""; }
+});
+
+searchInput.addEventListener("input", ()=>{
+  clearTimeout(searchTimer);
+  const q = searchInput.value.trim();
+  if (q.length < 3){ searchResults.innerHTML=""; return; }
+  searchTimer = setTimeout(async ()=>{
+    const c = map.getCenter();
+    try{
+      const r = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&lat=${c.lat}&lon=${c.lng}&limit=6`);
+      const j = await r.json();
+      const feats = (j.features||[]).filter(f=>f.properties?.countrycode==="CZ");
+      searchResults.innerHTML = "";
+      for (const f of feats){
+        const p = f.properties;
+        const name = p.name || p.street || "";
+        const sub = [p.district, p.city, p.postcode].filter(Boolean).join(", ");
+        const el = document.createElement("div");
+        el.className = "result";
+        el.innerHTML = `${name}<div class="sub">${sub}</div>`;
+        el.onclick = ()=>{
+          const [lng, lat] = f.geometry.coordinates;
+          map.flyTo({center:[lng,lat], zoom:16.5, duration:1400});
+          if (searchMarker) searchMarker.remove();
+          searchMarker = new maplibregl.Marker({color:"#ff2d55"}).setLngLat([lng,lat]).addTo(map);
+          searchBox.classList.remove("open");
+          searchResults.innerHTML = "";
+          searchInput.value = "";
+        };
+        searchResults.appendChild(el);
+      }
+      if (!feats.length) searchResults.innerHTML = `<div class="result"><span class="sub">nic nenalezeno</span></div>`;
+    }catch(e){
+      searchResults.innerHTML = `<div class="result"><span class="sub">hledání selhalo, zkus znovu</span></div>`;
+    }
+  }, 350);
+});
 </script>
 </body>
 </html>
