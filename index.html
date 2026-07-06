@@ -84,7 +84,8 @@
 const API_LOCAL = "/api/pid";
 const API_FALLBACK = "https://uzenopkyiwxdrpyddpjz.supabase.co/functions/v1/pid-live";
 let API = location.protocol === "file:" ? API_FALLBACK : API_LOCAL;
-const POLL_MS = 10000;
+const POLL_MS = 5000;
+const REDUCED_MOTION = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // route_type -> config
 const TYPES = {
@@ -165,37 +166,81 @@ map.addControl(new maplibregl.GeolocateControl({
 
 const hidden = new Set();       // hidden route_types
 let heatOn = false;
-let lastData = [];
 
-function toGeoJSON(rows){
-  return {type:"FeatureCollection", features: rows.map(r=>({
-    type:"Feature",
-    geometry:{type:"Point", coordinates:[r[1], r[0]]},
-    properties:{delay:r[3], rt:norm(r[4]), route:r[5]}
-  }))};
+// ---- interpolated tracks: id -> {from:[lng,lat], to:[lng,lat], start, props} ----
+const tracks = new Map();
+const JUMP = 0.02; // ~2 km — bigger jumps snap instead of glide
+
+function lerpPos(tr, now){
+  if (REDUCED_MOTION) return tr.to;
+  const k = Math.min(1, (now - tr.start) / POLL_MS);
+  return [tr.from[0] + (tr.to[0] - tr.from[0]) * k,
+          tr.from[1] + (tr.to[1] - tr.from[1]) * k];
 }
 
-function render(){
-  const rows = lastData.filter(r=>!hidden.has(norm(r[4])));
-  const gj = toGeoJSON(rows);
-  const src = map.getSource("vehicles");
-  if (src) src.setData(gj);
+function ingest(rows){
+  const now = performance.now();
+  const seen = new Set();
+  for (const r of rows){
+    const id = r[6] ?? (r[5] + "_" + r[4]);
+    seen.add(id);
+    const to = [r[1], r[0]];
+    const props = {delay:r[3], rt:norm(r[4]), route:r[5]};
+    const tr = tracks.get(id);
+    if (tr){
+      const cur = lerpPos(tr, now);
+      const jump = Math.abs(to[0]-cur[0]) > JUMP || Math.abs(to[1]-cur[1]) > JUMP;
+      tr.from = jump ? to : cur;
+      tr.to = to; tr.start = now; tr.props = props;
+    } else {
+      tracks.set(id, {from:to, to, start:now, props});
+    }
+  }
+  for (const id of tracks.keys()) if (!seen.has(id)) tracks.delete(id);
+}
 
-  // stats (over visible)
-  document.getElementById("count").textContent = rows.length;
-  const delays = rows.map(r=>Math.max(0,r[3]));
-  const avg = delays.length ? delays.reduce((a,b)=>a+b,0)/delays.length : 0;
+function buildGeoJSON(){
+  const now = performance.now();
+  const features = [];
+  for (const tr of tracks.values()){
+    if (hidden.has(tr.props.rt)) continue;
+    features.push({type:"Feature",
+      geometry:{type:"Point", coordinates:lerpPos(tr, now)},
+      properties:tr.props});
+  }
+  return {type:"FeatureCollection", features};
+}
+
+function updateStats(){
+  let n = 0, sum = 0;
+  const counts = {};
+  for (const tr of tracks.values()){
+    const t = tr.props.rt;
+    counts[t] = (counts[t]||0) + 1;
+    if (hidden.has(t)) continue;
+    n++; sum += Math.max(0, tr.props.delay);
+  }
+  document.getElementById("count").textContent = n;
+  const avg = n ? sum/n : 0;
   const el = document.getElementById("avgDelay");
   el.textContent = avg>=60 ? (avg/60).toFixed(1)+" min" : Math.round(avg)+" s";
   el.className = avg>180 ? "bad" : (avg>90 ? "warn" : "");
-
-  // per-type counts
-  const counts = {};
-  for (const r of lastData){ const t=norm(r[4]); counts[t]=(counts[t]||0)+1; }
   for (const t in TYPES){
     const c = document.querySelector(`[data-cnt="${t}"]`);
     if (c) c.textContent = counts[t]||0;
   }
+}
+
+function render(){
+  const src = map.getSource("vehicles");
+  if (src) src.setData(buildGeoJSON());
+}
+
+// ~14 fps animation — smooth glide without hammering the GPU
+let lastFrame = 0;
+function frame(ts){
+  if (ts - lastFrame > 70){ lastFrame = ts; render(); }
+  requestAnimationFrame(frame);
 }
 
 async function poll(){
@@ -207,8 +252,8 @@ async function poll(){
         j.error==="missing_api_key" ? "⚠ chybí GOLEMIO_API_KEY na serveru" : "⚠ chyba dat: "+j.error;
       return;
     }
-    lastData = j.v || [];
-    render();
+    ingest(j.v || []);
+    updateStats();
     document.getElementById("status").textContent =
       "aktualizováno " + new Date().toLocaleTimeString("cs-CZ");
   }catch(e){
@@ -221,7 +266,7 @@ map.on("load", async ()=>{
   // icons
   await Promise.all(Object.entries(TYPES).map(([t,cfg])=>loadIcon(map,"ic-"+t,cfg.color,GLYPHS[cfg.key])));
 
-  map.addSource("vehicles",{type:"geojson",data:toGeoJSON([])});
+  map.addSource("vehicles",{type:"geojson",data:{type:"FeatureCollection",features:[]}});
 
   // delay heat — signature layer, under the icons
   map.addLayer({
@@ -265,6 +310,7 @@ map.on("load", async ()=>{
 
   poll();
   setInterval(poll, POLL_MS);
+  requestAnimationFrame(frame);
 });
 
 // build type toggles
@@ -278,7 +324,7 @@ for (const [t,cfg] of Object.entries(TYPES)){
     const tt = +t;
     hidden.has(tt) ? hidden.delete(tt) : hidden.add(tt);
     row.classList.toggle("off", hidden.has(tt));
-    render();
+    render(); updateStats();
   };
   typesEl.appendChild(row);
 }
