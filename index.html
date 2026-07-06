@@ -156,6 +156,12 @@ const map = new maplibregl.Map({
   attributionControl:{compact:true},
 });
 map.addControl(new maplibregl.NavigationControl({showCompass:false}), "bottom-right");
+map.addControl(new maplibregl.GeolocateControl({
+  positionOptions:{enableHighAccuracy:true},
+  fitBoundsOptions:{maxZoom:18.5},
+  trackUserLocation:false,
+  showAccuracyCircle:true
+}), "bottom-right");
 
 const hidden = new Set();       // hidden route_types
 let heatOn = false;
