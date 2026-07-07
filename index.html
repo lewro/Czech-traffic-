@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>PID LIVE — dispečink Prahy</title>
+<meta name="description" content="Živá mapa všech vozidel MHD v Praze — tramvaje, metro, autobusy, vlaky, přívozy.">
+<meta name="theme-color" content="#0b0d11">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icons/favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PID LIVE">
 <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
 <style>
   :root{
@@ -23,7 +32,7 @@
     border:1px solid var(--line);border-radius:10px;padding:14px 14px 10px;
   }
   .brand{display:flex;align-items:baseline;gap:8px}
-  .brand h1{font-size:15px;letter-spacing:.14em;font-weight:700}
+  .brand h1{font-size:15px;letter-spacing:.14em;font-weight:400}
   .live{display:inline-flex;align-items:center;gap:5px;font-size:10px;color:var(--dim);letter-spacing:.1em}
   .live::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--hot);
     animation:pulse 1.6s ease-in-out infinite}
@@ -31,12 +40,27 @@
   @media (prefers-reduced-motion:reduce){.live::before{animation:none}}
 
   .stats{display:flex;gap:14px;margin:10px 0 12px}
-  .stat b{display:block;font-size:20px;font-weight:700;line-height:1.1}
+  .stat b{display:block;font-size:20px;font-weight:400;line-height:1.1}
   .stat span{font-size:9px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase}
   #avgDelay.warn{color:#ffc93c}
   #avgDelay.bad{color:var(--hot)}
 
-  .types{display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--line);padding-top:8px}
+  .legend{border-top:1px solid var(--line);padding-top:8px}
+  .legend-head{
+    display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;
+    padding:2px 6px;border-radius:6px;font-size:10px;color:var(--dim);
+    letter-spacing:.12em;text-transform:uppercase;transition:background .12s;
+  }
+  .legend-head:hover{background:rgba(255,255,255,.05);color:var(--text)}
+  .legend-head .caret{
+    margin-left:auto;display:inline-block;width:8px;height:8px;
+    border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+    transform:rotate(45deg);transition:transform .18s ease;
+  }
+  .legend.collapsed .legend-head .caret{transform:rotate(-45deg)}
+  .types{display:flex;flex-direction:column;gap:2px;margin-top:4px;
+    overflow:hidden;transition:max-height .22s ease, opacity .18s ease, margin-top .18s ease}
+  .legend.collapsed .types{max-height:0;opacity:0;margin-top:0;pointer-events:none}
   .type{display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:6px;cursor:pointer;
     font-size:11px;user-select:none;transition:background .12s}
   .type:hover{background:rgba(255,255,255,.05)}
@@ -58,7 +82,7 @@
     border-radius:8px;font-family:inherit;font-size:12px;padding:10px 12px;
   }
   .maplibregl-popup-tip{border-top-color:var(--line)!important;border-bottom-color:var(--line)!important}
-  .pp b{font-size:14px}
+  .pp b{font-size:14px;font-weight:400}
   .pp .d{color:var(--dim);font-size:10px;margin-top:2px}
 
   @media(max-width:520px){.panel{width:calc(100% - 24px)}}
@@ -102,7 +126,12 @@
     <div class="stat"><b id="count">—</b><span>vozidel</span></div>
     <div class="stat"><b id="avgDelay">—</b><span>prům. zpoždění</span></div>
   </div>
-  <div class="types" id="types"></div>
+  <div class="legend" id="legend">
+    <div class="legend-head" id="legendHead" role="button" tabindex="0" aria-expanded="true" aria-controls="types">
+      <span>Legenda</span><span class="caret" aria-hidden="true"></span>
+    </div>
+    <div class="types" id="types"></div>
+  </div>
   <button class="heatToggle" id="heatBtn">🔥 zóny zpoždění: vyp</button>
   <div class="status" id="status">připojuji…</div>
 </div>
@@ -364,6 +393,26 @@ for (const [t,cfg] of Object.entries(TYPES)){
   typesEl.appendChild(row);
 }
 
+// ---- foldable legend ----
+(function(){
+  const legend = document.getElementById("legend");
+  const head = document.getElementById("legendHead");
+  const KEY = "pid-legend-collapsed";
+  if (localStorage.getItem(KEY) === "1"){
+    legend.classList.add("collapsed");
+    head.setAttribute("aria-expanded", "false");
+  }
+  function toggle(){
+    const collapsed = legend.classList.toggle("collapsed");
+    head.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    try { localStorage.setItem(KEY, collapsed ? "1" : "0"); } catch(e){}
+  }
+  head.addEventListener("click", toggle);
+  head.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " "){ e.preventDefault(); toggle(); }
+  });
+})();
+
 document.getElementById("heatBtn").onclick = function(){
   heatOn = !heatOn;
   this.classList.toggle("on", heatOn);
@@ -422,6 +471,15 @@ searchInput.addEventListener("input", ()=>{
     }
   }, 350);
 });
+
+// ---- PWA service worker registration ----
+if ("serviceWorker" in navigator){
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.error("SW registration failed", err);
+    });
+  });
+}
 </script>
 </body>
 </html>
